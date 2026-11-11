@@ -1,4 +1,3 @@
-
 """Alkosto y Ktronix: su buscador es Algolia.
 
 La página de búsqueda trae el applicationId, la clave de SOLO búsqueda (pública: la usa
@@ -20,12 +19,20 @@ APP_RE = re.compile(r"applicationId[\"']?\s*:\s*[\"']([A-Za-z0-9]+)[\"']")
 KEY_RE = re.compile(r"(?<![A-Za-z])apiKey[\"']?\s*:\s*[\"']([A-Za-z0-9=+/_-]{20,})[\"']")
 IDX_RE = re.compile(r"indexName[\"']?\s*:\s*[\"']([^\"']+)[\"']")
 
-NAME_KEYS = ["name", "title", "productname", "label", "description"]
-PRICE_KEYS = ["price", "pricevalue", "sellingprice", "finalprice", "saleprice", "currentprice"]
-LIST_KEYS = ["listprice", "oldprice", "baseprice", "regularprice", "strikeprice",
-             "priceoriginal", "originalprice", "pricebeforediscount"]
-URL_KEYS = ["url", "path", "link", "producturl"]
+NAME_KEYS = ["name", "title", "productname", "label"]
+SELL_KEYS = ["discountprice", "sellingprice", "saleprice", "finalprice", "currentprice",
+             "pricevalue"]
+LIST_KEYS = ["price", "listprice", "oldprice", "baseprice", "regularprice", "strikeprice",
+             "originalprice", "pricebeforediscount"]
+URL_KEYS = ["url_es", "url", "producturl", "path", "link", "slug"]
 ID_KEYS = ["code", "sku", "objectid", "id"]
+
+# Algolia suele nombrar campos como name_text_es, code_string, discountprice_double...
+TYPE_SUFFIX = re.compile(r"_(double|string|int|long|boolean|text_es|text)(_mv)?$")
+
+
+def _norm(key: str) -> str:
+    return TYPE_SUFFIX.sub("", key.lower())
 
 
 def _pick(node: Any, keys: List[str], depth: int = 0) -> Any:
@@ -33,7 +40,7 @@ def _pick(node: Any, keys: List[str], depth: int = 0) -> Any:
     if depth > 4:
         return None
     if isinstance(node, dict):
-        low = {k.lower(): v for k, v in node.items()}
+        low = {_norm(k): v for k, v in node.items() if not k.startswith("_")}
         for k in keys:
             v = low.get(k)
             if isinstance(v, dict):
@@ -42,8 +49,8 @@ def _pick(node: Any, keys: List[str], depth: int = 0) -> Any:
                 v = v[0]
             if v not in (None, "", {}, []):
                 return v
-        for v in node.values():
-            if isinstance(v, (dict, list)):
+        for k, v in node.items():
+            if not k.startswith("_") and isinstance(v, (dict, list)):
                 found = _pick(v, keys, depth + 1)
                 if found is not None:
                     return found
@@ -85,15 +92,22 @@ class AlgoliaStore(Scraper):
         return r.json().get("hits", [])
 
     def to_item(self, hit: dict) -> Optional[Item]:
-        price = parse_cop(_pick(hit, PRICE_KEYS))
+        sell = parse_cop(_pick(hit, SELL_KEYS))
+        listed = [v for v in (parse_cop(_pick(hit, [k])) for k in LIST_KEYS) if v]
+        price = sell or (listed[0] if listed else None)
         name = _pick(hit, NAME_KEYS)
         if not price or not name:
             return None
+        top = max(listed) if listed else None
+        list_price = top if (top and top > price) else None
         sku = str(_pick(hit, ID_KEYS) or name)
-        url = str(_pick(hit, URL_KEYS) or self.base)
+        url = _pick(hit, URL_KEYS)
+        if not url:
+            url = f"{self.base}/search?text={sku}"
+        url = str(url)
         if url.startswith("/"):
             url = self.base + url
-        return Item(self.name, sku, str(name), url, price, parse_cop(_pick(hit, LIST_KEYS)))
+        return Item(self.name, sku, str(name), url, price, list_price)
 
     def search(self, term: str) -> List[Item]:
         items = (self.to_item(h) for h in self.raw_hits(term))
@@ -117,4 +131,8 @@ if __name__ == "__main__":
     hits = store.raw_hits(term)
     print(f"{len(hits)} hits; con precio y nombre reconocidos: {len(store.search(term))}")
     if hits:
-        print(json.dumps(hits[0], ensure_ascii=False)[:1500])
+        useful = re.compile(r"price|disc|name|url|code|link|slug|path|list|base|stock", re.I)
+        brief = {k: str(v)[:70] for k, v in hits[0].items()
+                 if not k.startswith("_") and useful.search(k)}
+        print(json.dumps(brief, ensure_ascii=False, indent=0))
+
