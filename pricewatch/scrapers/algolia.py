@@ -21,9 +21,9 @@ IDX_RE = re.compile(r"indexName[\"']?\s*:\s*[\"']([^\"']+)[\"']")
 
 NAME_KEYS = ["name", "title", "productname", "label"]
 SELL_KEYS = ["discountprice", "sellingprice", "saleprice", "finalprice", "currentprice",
-             "pricevalue"]
-LIST_KEYS = ["price", "listprice", "oldprice", "baseprice", "regularprice", "strikeprice",
-             "originalprice", "pricebeforediscount"]
+             "lowestprice", "pricevalue"]
+LIST_KEYS = ["price", "listprice", "oldprice", "baseprice", "baseprice_cop", "pricevalue_cop",
+             "regularprice", "strikeprice", "originalprice", "pricebeforediscount"]
 URL_KEYS = ["url_es", "url", "producturl", "path", "link", "slug"]
 ID_KEYS = ["code", "sku", "objectid", "id"]
 
@@ -92,6 +92,8 @@ class AlgoliaStore(Scraper):
         return r.json().get("hits", [])
 
     def to_item(self, hit: dict) -> Optional[Item]:
+        if _pick(hit, ["instockflag"]) in (False, "False", "false"):
+            return None  # agotado: un precio roto ahí no se puede comprar
         sell = parse_cop(_pick(hit, SELL_KEYS))
         listed = [v for v in (parse_cop(_pick(hit, [k])) for k in LIST_KEYS) if v]
         price = sell or (listed[0] if listed else None)
@@ -135,4 +137,3 @@ if __name__ == "__main__":
         brief = {k: str(v)[:70] for k, v in hits[0].items()
                  if not k.startswith("_") and useful.search(k)}
         print(json.dumps(brief, ensure_ascii=False, indent=0))
-
